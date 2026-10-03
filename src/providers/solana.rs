@@ -19,7 +19,7 @@ use solana_transaction::versioned::VersionedTransaction;
 use crate::{Shared, ledger::SubmitError};
 
 pub fn router() -> Router<Shared> {
-    Router::new().route("/solana-rpc", post(handle))
+    Router::new().route("/solana-rpc", post(handle).get(super::websocket::upgrade))
 }
 
 /// Fixed fee samples returned by `getRecentPrioritizationFees`.
@@ -105,6 +105,7 @@ type RpcResult = Result<Value, (i64, String)>;
 fn dispatch(state: &Shared, method: &str, params: &Value) -> RpcResult {
     let mut ledger = state.lock().expect("ledger");
     ledger.settle();
+    ledger.count(method);
     let context = json!({"slot": ledger.slot()});
     match method {
         "getSlot" => Ok(json!(ledger.slot())),
@@ -183,6 +184,36 @@ fn dispatch(state: &Shared, method: &str, params: &Value) -> RpcResult {
                 .collect();
             Ok(json!({"context": context, "value": values}))
         }
+        "getSignaturesForAddress" => {
+            let address = params[0]
+                .as_str()
+                .ok_or((INVALID_PARAMS, "expected address".into()))?;
+            let mut rows:Vec<_>=ledger.txs.iter().filter_map(|(signature,record)|{
+                let height=record.landed_height?;
+                if ledger.height()<height+ledger.scenario.chain.finality_blocks {return None}
+                let rendered=record.rendered.as_ref()?;
+                if !rendered["transaction"]["message"]["accountKeys"].as_array()?.iter().any(|k|k["pubkey"].as_str()==Some(address)) {return None}
+                Some(json!({"signature":signature.to_string(),"slot":rendered["slot"],"err":record.err,"confirmationStatus":"finalized"}))
+            }).collect();
+            rows.sort_by(|a, b| {
+                b["slot"]
+                    .as_u64()
+                    .cmp(&a["slot"].as_u64())
+                    .then_with(|| b["signature"].as_str().cmp(&a["signature"].as_str()))
+            });
+            if let Some(before) = params[1]["before"].as_str() {
+                if let Some(index) = rows
+                    .iter()
+                    .position(|r| r["signature"].as_str() == Some(before))
+                {
+                    rows.drain(..=index);
+                } else {
+                    rows.clear();
+                }
+            }
+            rows.truncate(params[1]["limit"].as_u64().unwrap_or(100) as usize);
+            Ok(json!(rows))
+        }
         "getTransaction" => {
             let signature = params[0]
                 .as_str()
@@ -212,7 +243,7 @@ fn dispatch(state: &Shared, method: &str, params: &Value) -> RpcResult {
     }
 }
 
-fn status(ledger: &crate::ledger::Ledger, signature: &Signature) -> Value {
+pub(super) fn status(ledger: &crate::ledger::Ledger, signature: &Signature) -> Value {
     let Some(record) = ledger.txs.get(signature) else {
         return Value::Null;
     };

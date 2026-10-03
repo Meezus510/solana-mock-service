@@ -7,7 +7,7 @@ publish = false
 # Solana crate versions match transaction-service exactly so both can share
 # one build cache (`CARGO_TARGET_DIR`) and bincode formats are identical.
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "=0.22.1"
 bincode = "=1.3.3"
 bs58 = "=0.5.1"

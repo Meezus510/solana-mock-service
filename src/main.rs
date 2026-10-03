@@ -93,6 +93,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_vault_matches_the_execution_vault() {
+        let wallet = solana_pubkey::Pubkey::new_unique();
+        let (_, auth) = call(
+            Request::post("/jupiter/trigger/v2/auth/verify")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"walletPubkey":wallet.to_string()}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        let (status, vault) = call(
+            Request::get("/jupiter/trigger/v2/vault")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", auth["token"].as_str().unwrap()),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            vault["vaultPubkey"],
+            crate::ledger::vault_of(&wallet).to_string()
+        );
+    }
+
+    #[tokio::test]
     async fn recent_prioritization_fees_are_deterministic() {
         let request = json!({"jsonrpc": "2.0", "id": 7, "method": "getRecentPrioritizationFees", "params": []});
         let (status, first) = rpc(request.clone()).await;

@@ -16,9 +16,20 @@ pub struct Scenario {
     pub tokens: HashMap<String, TokenBehavior>,
     pub chain: ChainBehavior,
     pub rpc: RpcFaults,
+    pub websocket: WebSocketFaults,
     pub jupiter: JupiterFaults,
     pub trigger: TriggerBehavior,
     pub jito: JitoFaults,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSocketFaults {
+    pub reject_subscriptions: bool,
+    pub drop_notifications: bool,
+    pub disconnect_after_ms: u64,
+    pub notification_delay_ms: u64,
+    pub duplicate_notifications: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -158,6 +169,9 @@ pub struct TriggerBehavior {
     pub submit_error_not_landed_rate: f64,
     /// Armed orders fill on their own after this many ms (0 = never).
     pub fill_after_ms: u64,
+    /// Delay between a keeper fill and its separate empty-account close.
+    pub refund_after_ms: u64,
+    pub fill_stop_loss: bool,
     /// Armed orders expire (funds returned) after this many ms (0 = never).
     pub expire_after_ms: u64,
     /// Only the first N crafted deposits use `deposit_cu_price`; later
@@ -176,6 +190,8 @@ impl Default for TriggerBehavior {
             submit_error_after_landing_rate: 0.0,
             submit_error_not_landed_rate: 0.0,
             fill_after_ms: 0,
+            refund_after_ms: 1000,
+            fill_stop_loss: false,
             expire_after_ms: 0,
             spike_first_n: 0,
             history_lag_ms: 0,

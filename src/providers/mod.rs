@@ -5,3 +5,4 @@ pub mod control;
 pub mod jito;
 pub mod jupiter;
 pub mod solana;
+pub mod websocket;

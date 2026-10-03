@@ -288,7 +288,7 @@ async fn order(
     .into_response()
 }
 
-fn unsigned(
+pub(crate) fn unsigned(
     payer: &Pubkey,
     instructions: &[Instruction],
     hash: solana_hash::Hash,
@@ -337,12 +337,26 @@ async fn challenge() -> Json<Value> {
     Json(json!({"challenge": "mock-trigger-challenge"}))
 }
 
-async fn verify() -> Json<Value> {
-    Json(json!({"token": "mock-trigger-jwt"}))
+async fn verify(Json(body): Json<Value>) -> Json<Value> {
+    Json(
+        json!({"token": format!("mock-trigger-jwt:{}", body["walletPubkey"].as_str().unwrap_or_default())}),
+    )
 }
 
-async fn vault() -> Json<Value> {
-    Json(json!({"vaultPubkey": derived("trigger-vault-registry", &[]).to_string()}))
+async fn vault(headers: HeaderMap) -> Response {
+    let wallet = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer mock-trigger-jwt:"))
+        .and_then(|v| v.parse::<Pubkey>().ok());
+    match wallet {
+        Some(wallet) => Json(json!({"vaultPubkey": vault_of(&wallet).to_string()})).into_response(),
+        None => (
+            StatusCode::UNAUTHORIZED,
+            "mock wallet authentication required",
+        )
+            .into_response(),
+    }
 }
 
 /// A Trigger vault transaction for the mock ledger.
@@ -522,6 +536,8 @@ async fn create_order(State(state): State<Shared>, Json(body): Json<Value>) -> R
             state: "open",
             deposit_signature: signature,
             fill_signature: None,
+            refund_at: None,
+            filled_stop_loss: trigger.fill_stop_loss,
             fill_at: (trigger.fill_after_ms > 0)
                 .then(|| now + Duration::from_millis(trigger.fill_after_ms)),
             expire_at: (trigger.expire_after_ms > 0)
@@ -565,6 +581,8 @@ async fn history(State(state): State<Shared>) -> Response {
                 "outputMint": order.output_mint.to_string(),
                 "initialInputAmount": order.amount.to_string(),
                 "orderState": if lagging { "open" } else { order.state },
+                "tpState": if order.state=="filled" {if order.filled_stop_loss {"oco_cancelled"} else {"fill_success"}} else {"open"},
+                "slState": if order.state=="filled" {if order.filled_stop_loss {"fill_success"} else {"oco_cancelled"}} else {"open"},
                 "txSignature": order.fill_signature.map(|s| s.to_string()),
                 "events": events,
             })

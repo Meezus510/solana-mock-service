@@ -124,6 +124,8 @@ pub struct Order {
     pub fill_signature: Option<Signature>,
     pub fill_at: Option<Instant>,
     pub expire_at: Option<Instant>,
+    pub refund_at: Option<Instant>,
+    pub filled_stop_loss: bool,
 }
 
 pub struct Ledger {
@@ -561,7 +563,7 @@ impl Ledger {
             }
         }
         let rendered = self.render(tx, signature, &pre, &outcome, fee, err.as_ref(), limit);
-        if commit && closes_accounts {
+        if commit && closes_accounts && payer != keeper() {
             *self
                 .counters
                 .entry("token_close_fees_lamports".to_owned())
@@ -696,6 +698,11 @@ impl Ledger {
         if let std::collections::hash_map::Entry::Vacant(entry) = post.tokens.entry(vault_tokens) {
             entry.insert(0);
             post.lamports.insert(vault_tokens, TOKEN_ACCOUNT_RENT);
+            let available = post.lamports.entry(wallet).or_default();
+            if *available < TOKEN_ACCOUNT_RENT {
+                return Some(json!({"InstructionError":[index,"InsufficientFunds"]}));
+            }
+            *available -= TOKEN_ACCOUNT_RENT;
             let decimals = self.decimals.get(&mint).copied().unwrap_or(6);
             new_accounts.push((vault_tokens, vault, mint, decimals));
         }
@@ -784,6 +791,9 @@ impl Ledger {
                     .map(ToString::to_string)
                     .collect();
                 let data = instruction.data.as_slice();
+                if program.to_string()==TOKEN_PROGRAM && data==[CLOSE_ACCOUNT] {
+                    return json!({"program":"spl-token","programId":program.to_string(),"parsed":{"type":"closeAccount","info":{"account":accounts.first(),"destination":accounts.get(1),"owner":accounts.get(2)}}});
+                }
                 if program == system_program()
                     && data.len() == 12
                     && data[..4] == 2_u32.to_le_bytes()
@@ -925,10 +935,43 @@ impl Ledger {
             if filling {
                 order.state = "filled";
                 order.fill_signature = Some(signature);
+                order.refund_at =
+                    Some(now + Duration::from_millis(self.scenario.trigger.refund_after_ms));
                 self.count("trigger_fills");
             } else {
                 order.state = "expired";
                 self.count("trigger_expiries");
+            }
+        }
+        let refunds: Vec<_> = self
+            .orders
+            .values()
+            .filter(|o| o.refund_at.is_some_and(|at| at <= now))
+            .cloned()
+            .collect();
+        for order in refunds {
+            let payer = keeper();
+            let vault = vault_of(&order.user);
+            let account = token_account(&vault, &order.input_mint);
+            let instruction = solana_instruction::Instruction {
+                program_id: Pubkey::from_str(TOKEN_PROGRAM).unwrap(),
+                accounts: vec![
+                    solana_instruction::AccountMeta::new(account, false),
+                    solana_instruction::AccountMeta::new(order.user, false),
+                    solana_instruction::AccountMeta::new_readonly(vault, true),
+                ],
+                data: vec![CLOSE_ACCOUNT],
+            };
+            let (hash, _) = self.issue_blockhash();
+            let mut tx = crate::providers::jupiter::unsigned(&payer, &[instruction], hash);
+            let mut raw = [0_u8; 64];
+            raw[..8].copy_from_slice(&self.next_nonce().to_le_bytes());
+            raw[8..40].copy_from_slice(payer.as_ref());
+            tx.signatures = vec![Signature::from(raw)];
+            if let Ok(sig) = self.submit(tx, "trigger_refund", Duration::ZERO) {
+                self.land(sig);
+                self.orders.get_mut(&order.id).unwrap().refund_at = None;
+                self.count("trigger_rent_refunds");
             }
         }
     }
