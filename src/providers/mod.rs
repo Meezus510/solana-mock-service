@@ -6,3 +6,5 @@ pub mod jito;
 pub mod jupiter;
 pub mod solana;
 pub mod websocket;
+
+pub mod snapshot;

@@ -20,6 +20,8 @@ pub struct Scenario {
     pub jupiter: JupiterFaults,
     pub trigger: TriggerBehavior,
     pub jito: JitoFaults,
+    pub birdeye: SnapshotBehavior,
+    pub telegram: TelegramBehavior,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -204,4 +206,28 @@ impl Default for TriggerBehavior {
 pub struct JitoFaults {
     /// Jito block engine unavailable (HTTP 503).
     pub down: bool,
+}
+
+/// Deterministic, per-endpoint fault schedule. on_call=0 applies to every call.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotFault {
+    pub on_call: u64,
+    pub status: Option<u16>,
+    pub delay_ms: u64,
+    pub malformed: bool,
+    pub body: Option<serde_json::Value>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotBehavior { pub faults: HashMap<String, Vec<SnapshotFault>> }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelegramBehavior {
+    pub head_message_id: i64,
+    pub messages: Vec<serde_json::Value>,
+    pub faults: HashMap<String, Vec<SnapshotFault>>,
+}
+impl Default for TelegramBehavior {
+    fn default() -> Self { Self {head_message_id:100,messages:Vec::new(),faults:HashMap::new()} }
 }

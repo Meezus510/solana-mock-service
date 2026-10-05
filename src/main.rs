@@ -23,15 +23,15 @@ use crate::{
 
 pub type Shared = Arc<Mutex<Ledger>>;
 
-fn app() -> Router {
+#[cfg(test)]
+fn app() -> Router { app_for_scope("all") }
+fn app_for_scope(scope: &str) -> Router {
     let state: Shared = Arc::new(Mutex::new(Ledger::new(Scenario::default())));
-    Router::new()
-        .route("/health", get(health))
-        .merge(providers::solana::router())
-        .merge(providers::jupiter::router())
-        .merge(providers::jito::router())
-        .merge(providers::control::router())
-        .with_state(state)
+    let router=Router::new().route("/health",get(health))
+        .merge(providers::control::router()).merge(providers::snapshot::router());
+    let router=if scope=="all" {router.merge(providers::solana::router())
+        .merge(providers::jupiter::router()).merge(providers::jito::router())}else{router};
+    router.with_state(state)
 }
 
 async fn health() -> Json<Value> {
@@ -42,13 +42,22 @@ async fn health() -> Json<Value> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env = AppEnv::parse(std::env::var("APP_ENV").ok().as_deref())?;
     let config = Config::load(env, Path::new("config"))?;
-    let address = format!("{}:{}", config.server.host, config.server.port);
+    let scope=std::env::var("MOCK_PROVIDERS").unwrap_or_else(|_|"all".into());
+    if !matches!(scope.as_str(),"all"|"snapshots") {return Err("MOCK_PROVIDERS must be all or snapshots".into());}
+    let address=match std::env::var("MOCK_BIND_ADDR") {
+        Ok(address) => {
+            let parsed:std::net::SocketAddr=address.parse()?;
+            if env != AppEnv::Local || !parsed.ip().is_loopback() {return Err("mock bind override requires local loopback".into());}
+            address
+        },
+        Err(_)=>format!("{}:{}",config.server.host,config.server.port),
+    };
     let listener = tokio::net::TcpListener::bind(&address).await?;
     println!(
         "provider-mock-service ({}) listening on {address}",
         env.name()
     );
-    axum::serve(listener, app())
+    axum::serve(listener, app_for_scope(&scope))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
@@ -83,6 +92,12 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn snapshot_scope_disables_unrelated_transaction_routes() {
+        let response=app_for_scope("snapshots").oneshot(Request::post("/solana-rpc").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

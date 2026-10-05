@@ -138,6 +138,8 @@ pub struct Ledger {
     pub txs: HashMap<Signature, TxRecord>,
     pub orders: BTreeMap<String, Order>,
     pub counters: BTreeMap<String, u64>,
+    pub snapshot_counters: BTreeMap<String,u64>,
+    pub snapshot_requests: Vec<Value>,
     /// Swaps that already failed per mint, for `error_first_n`.
     failures_by_mint: HashMap<Pubkey, u32>,
     deposits_crafted: u32,
@@ -162,6 +164,8 @@ impl Ledger {
             txs: HashMap::new(),
             orders: BTreeMap::new(),
             counters: BTreeMap::new(),
+            snapshot_counters: BTreeMap::new(),
+            snapshot_requests: Vec::new(),
             failures_by_mint: HashMap::new(),
             deposits_crafted: 0,
             rng: 0x9E37_79B9_7F4A_7C15,

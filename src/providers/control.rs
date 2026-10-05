@@ -17,11 +17,14 @@ pub fn router() -> Router<Shared> {
         .route("/__mock/scenario", post(set_scenario).get(get_scenario))
         .route("/__mock/reset", post(reset))
         .route("/__mock/state", get(state))
+        .route("/__mock/requests", get(requests))
         .route("/__mock/keypair", post(keypair))
 }
 
 async fn set_scenario(State(state): State<Shared>, Json(scenario): Json<Scenario>) -> Json<Value> {
-    state.lock().expect("ledger").scenario = scenario;
+    let mut ledger=state.lock().expect("ledger");
+    ledger.scenario=scenario;
+    ledger.snapshot_counters.clear();
     Json(json!({"status": "ok"}))
 }
 
@@ -52,3 +55,5 @@ async fn keypair() -> Json<Value> {
         "secret_base58": bs58::encode(keypair.to_bytes()).into_string(),
     }))
 }
+
+async fn requests(State(state): State<Shared>) -> Json<Value> { Json(json!(state.lock().expect("ledger").snapshot_requests)) }
