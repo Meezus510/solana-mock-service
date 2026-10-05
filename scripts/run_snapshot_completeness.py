@@ -85,7 +85,7 @@ def inside(args):
         if args.only!='regime':
             run('provider-error-matrix',cargo('test','-p','market-evidence-provider','--test','simulation_mock_faults'),DEFAULTS['market'],local)
         run('regime-snapshot-matrix',cargo('test','-p','market-evidence-service','--bin','market-regime-collector','snapshot_mock_regime'),DEFAULTS['market'],local)
-        run('regime-exact-minute-contract',cargo('test','-p','market-evidence-service','--bin','market-regime-collector','regime_returns_require_exact_valid_unique_complete_minutes'),DEFAULTS['market'])
+        run('regime-exact-minute-contract',cargo('test','-p','market-evidence-service','--bin','market-regime-collector','returns_'),DEFAULTS['market'])
         run('regime-persistence-contract',cargo('test','-p','market-evidence-persistence','--test','market_regime_contract'),DEFAULTS['market'],local)
         run('provider-ohlcv-contracts',cargo('test','-p','market-evidence-provider','--lib','ohlcv'),DEFAULTS['market'])
         run('provider-regime-horizon-contract',cargo('test','-p','market-evidence-provider','--lib','meme_five_minute'),DEFAULTS['market'])
