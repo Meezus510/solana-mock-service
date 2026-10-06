@@ -78,11 +78,17 @@ async fn respond(state: Shared, path: String, scope: Value, body: Value, faults:
     }
     (status,[("content-type","application/json")],wire).into_response()
 }
+fn snapshot_faults(faults: Vec<crate::providers::evidence::Fault>) -> Vec<SnapshotFault> {
+    faults.into_iter().map(|f| SnapshotFault {
+        on_call: f.on_call, status: if f.status == 0 { None } else { Some(f.status) },
+        delay_ms: f.delay_ms, malformed: f.malformed, body: f.body,
+    }).collect()
+}
 fn hex_digest(wire: &str) -> String { Sha256::digest(wire.as_bytes()).iter().map(|b|format!("{b:02x}")).collect() }
 async fn birdeye(State(state): State<Shared>, uri: axum::http::Uri, Query(q): Query<BTreeMap<String,String>>) -> Response {
     let path=uri.path().to_owned();
     let faults=state.lock().expect("ledger").scenario.birdeye.faults.get(&path).cloned().unwrap_or_default();
-    respond(state,path.clone(),json!(q),default_body(&path,&q),faults).await
+    respond(state,path.clone(),json!(q),default_body(&path,&q),snapshot_faults(faults)).await
 }
 async fn telegram(State(state): State<Shared>, Json(request): Json<Value>) -> Response {
     let scenario=state.lock().expect("ledger").scenario.telegram.clone();
@@ -98,7 +104,7 @@ async fn telegram(State(state): State<Shared>, Json(request): Json<Value>) -> Re
         _=>json!({"status":"ERROR","error_class":"INVALID_FIXTURE_OPERATION","messages":[],"channel_exhausted":false}),
     };
     let faults=scenario.faults.get(&path).cloned().unwrap_or_default();
-    respond(state,path,request,body,faults).await
+    respond(state,path,request,body,snapshot_faults(faults)).await
 }
 
 #[cfg(test)]

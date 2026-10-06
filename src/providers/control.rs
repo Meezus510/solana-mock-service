@@ -12,13 +12,17 @@ use solana_signer::Signer;
 
 use crate::{Shared, ledger::Ledger, scenario::Scenario};
 
-pub fn router() -> Router<Shared> {
-    Router::new()
+pub fn router_for_scope(scope: &str) -> Router<Shared> {
+    let router = Router::new()
         .route("/__mock/scenario", post(set_scenario).get(get_scenario))
         .route("/__mock/reset", post(reset))
         .route("/__mock/state", get(state))
-        .route("/__mock/requests", get(requests))
-        .route("/__mock/keypair", post(keypair))
+        .route("/__mock/keypair", post(keypair));
+    if scope == "snapshots" {
+        router.route("/__mock/requests", get(requests))
+    } else {
+        router
+    }
 }
 
 async fn set_scenario(State(state): State<Shared>, Json(scenario): Json<Scenario>) -> Json<Value> {

@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Scenario {
+    pub birdeye: crate::providers::evidence::EvidenceConfig,
+    pub telegram: crate::providers::evidence::TelegramConfig,
     /// Behavior for any mint without an entry in `tokens`.
     pub default_token: TokenBehavior,
     /// Per-mint behavior, keyed by base58 mint.
@@ -20,8 +22,6 @@ pub struct Scenario {
     pub jupiter: JupiterFaults,
     pub trigger: TriggerBehavior,
     pub jito: JitoFaults,
-    pub birdeye: SnapshotBehavior,
-    pub telegram: TelegramBehavior,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -217,17 +217,4 @@ pub struct SnapshotFault {
     pub delay_ms: u64,
     pub malformed: bool,
     pub body: Option<serde_json::Value>,
-}
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SnapshotBehavior { pub faults: HashMap<String, Vec<SnapshotFault>> }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TelegramBehavior {
-    pub head_message_id: i64,
-    pub messages: Vec<serde_json::Value>,
-    pub faults: HashMap<String, Vec<SnapshotFault>>,
-}
-impl Default for TelegramBehavior {
-    fn default() -> Self { Self {head_message_id:100,messages:Vec::new(),faults:HashMap::new()} }
 }

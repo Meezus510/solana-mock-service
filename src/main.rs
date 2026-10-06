@@ -27,10 +27,19 @@ pub type Shared = Arc<Mutex<Ledger>>;
 fn app() -> Router { app_for_scope("all") }
 fn app_for_scope(scope: &str) -> Router {
     let state: Shared = Arc::new(Mutex::new(Ledger::new(Scenario::default())));
-    let router=Router::new().route("/health",get(health))
-        .merge(providers::control::router()).merge(providers::snapshot::router());
-    let router=if scope=="all" {router.merge(providers::solana::router())
-        .merge(providers::jupiter::router()).merge(providers::jito::router())}else{router};
+    let router = Router::new()
+        .route("/health", get(health))
+        .merge(providers::control::router_for_scope(scope));
+    // Snapshot and full-simulation providers share endpoint paths, so select
+    // one implementation rather than mounting overlapping Axum routes.
+    let router = if scope == "snapshots" {
+        router.merge(providers::snapshot::router())
+    } else {
+        router.merge(providers::solana::router())
+            .merge(providers::jupiter::router())
+            .merge(providers::jito::router())
+            .merge(providers::evidence::router())
+    };
     router.with_state(state)
 }
 
@@ -41,16 +50,28 @@ async fn health() -> Json<Value> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env = AppEnv::parse(std::env::var("APP_ENV").ok().as_deref())?;
-    let config = Config::load(env, Path::new("config"))?;
-    let scope=std::env::var("MOCK_PROVIDERS").unwrap_or_else(|_|"all".into());
-    if !matches!(scope.as_str(),"all"|"snapshots") {return Err("MOCK_PROVIDERS must be all or snapshots".into());}
-    let address=match std::env::var("MOCK_BIND_ADDR") {
-        Ok(address) => {
-            let parsed:std::net::SocketAddr=address.parse()?;
-            if env != AppEnv::Local || !parsed.ip().is_loopback() {return Err("mock bind override requires local loopback".into());}
+    let config = Config::load(
+        env,
+        Path::new(&std::env::var("MOCK_CONFIG_DIR").unwrap_or_else(|_| "config".into())),
+    )?;
+    let scope = std::env::var("MOCK_PROVIDERS").unwrap_or_else(|_| "all".into());
+    if !matches!(scope.as_str(), "all" | "snapshots") {
+        return Err("MOCK_PROVIDERS must be all or snapshots".into());
+    }
+    let primary = std::env::var("MOCK_BIND_ADDR").ok();
+    let legacy = std::env::var("MOCK_BIND").ok();
+    if matches!((&primary, &legacy), (Some(a), Some(b)) if a != b) {
+        return Err("conflicting mock bind overrides".into());
+    }
+    let address = match primary.or(legacy) {
+        Some(address) => {
+            let parsed: std::net::SocketAddr = address.parse()?;
+            if env != AppEnv::Local || !parsed.ip().is_loopback() {
+                return Err("mock bind override requires local loopback".into());
+            }
             address
-        },
-        Err(_)=>format!("{}:{}",config.server.host,config.server.port),
+        }
+        None => format!("{}:{}", config.server.host, config.server.port),
     };
     let listener = tokio::net::TcpListener::bind(&address).await?;
     println!(
@@ -98,6 +119,23 @@ mod tests {
     async fn snapshot_scope_disables_unrelated_transaction_routes() {
         let response=app_for_scope("snapshots").oneshot(Request::post("/solana-rpc").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn snapshot_scope_retains_request_audit_and_head_configuration() {
+        let router = app_for_scope("snapshots");
+        let configured = router.clone().oneshot(Request::post("/__mock/scenario")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"telegram":{"head_message_id":321},"birdeye":{"faults":{"/defi/price":[{"status":null}]}}}"#)).unwrap()).await.unwrap();
+        assert_eq!(configured.status(), StatusCode::OK);
+        let head = router.clone().oneshot(Request::post("/telegram/provider")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"op":"head"}"#)).unwrap()).await.unwrap();
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(head.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!(body["head_message_id"], 321);
+        let audit = router.oneshot(Request::get("/__mock/requests").body(Body::empty()).unwrap()).await.unwrap();
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(audit.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -93,3 +93,7 @@ reacquire provider data or rerun unaffected Rust builds.
 Use `--only market` for a focused Market/regime rerun. It runs the acquisition
 matrices, provider fault matrix and OHLCV/horizon contract regressions in fresh
 isolated databases, without running Social or Strategy.
+
+## Existing local simulation
+
+The retained local simulation adapters and launcher are documented in [LOCAL_SIMULATION.md](docs/LOCAL_SIMULATION.md). Their full-provider routes use the default `MOCK_PROVIDERS=all`; the new completeness fixtures use `MOCK_PROVIDERS=snapshots`. The automation performance lab keeps Transaction in SHADOW and does not run the legacy live-semantics launcher.

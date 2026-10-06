@@ -129,6 +129,7 @@ pub struct Order {
 }
 
 pub struct Ledger {
+    pub evidence: crate::providers::evidence::EvidenceState,
     started: Instant,
     pub scenario: Scenario,
     balances: Balances,
@@ -155,6 +156,7 @@ pub enum SubmitError {
 impl Ledger {
     pub fn new(scenario: Scenario) -> Self {
         Self {
+            evidence: Default::default(),
             started: Instant::now(),
             scenario,
             balances: Balances::default(),

@@ -8,3 +8,4 @@ pub mod solana;
 pub mod websocket;
 
 pub mod snapshot;
+pub mod evidence;
