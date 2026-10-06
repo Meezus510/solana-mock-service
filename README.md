@@ -94,6 +94,19 @@ Use `--only market` for a focused Market/regime rerun. It runs the acquisition
 matrices, provider fault matrix and OHLCV/horizon contract regressions in fresh
 isolated databases, without running Social or Strategy.
 
+For regime acquisition repairs, run only the relevant isolated fixtures:
+
+```sh
+/opt/strategy-service/venv/bin/python scripts/run_snapshot_completeness.py --only regime --python /opt/strategy-service/venv/bin/python
+```
+
+This mode starts a disposable local PostgreSQL database and snapshot mock in a
+network namespace with loopback only, clears production environment variables,
+and caps CPU/memory. It exercises regime fallback, exact candle coverage, rejected
+response retention and atomic persistence; it skips Social, Strategy and unrelated
+provider endpoint matrices. Rust tests run sequentially because they share fixture
+reset endpoints. Successful fixtures do not prove production provider-only attribution.
+
 ## Existing local simulation
 
 The retained local simulation adapters and launcher are documented in [LOCAL_SIMULATION.md](docs/LOCAL_SIMULATION.md). Their full-provider routes use the default `MOCK_PROVIDERS=all`; the new completeness fixtures use `MOCK_PROVIDERS=snapshots`. The automation performance lab keeps Transaction in SHADOW and does not run the legacy live-semantics launcher.
