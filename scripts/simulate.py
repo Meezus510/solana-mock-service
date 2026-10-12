@@ -181,6 +181,13 @@ class Stack:
             PGSSLMODE="verify-full",
             PGSSLROOTCERT=str(self.root / "tls/ca.crt"),
         )
+        if getattr(args, "stream_first", "off") != "off":
+            # Research cutover: completed minutes from the mock Birdeye WebSocket.
+            self.env["MARKET_EVIDENCE_STREAM_FIRST"] = "true"
+            self.env["MARKET_EVIDENCE_TEST_STREAM_URL"] = (
+                self.urls["mock"].replace("http://", "ws://") + "/socket/solana"
+            )
+            self.env["MARKET_EVIDENCE_STREAM_FIRST_QUIET_POLICY"] = args.stream_first.upper()
         if "activation" in self.state:
             self.env["MARKET_EVIDENCE_PROVIDER_ACTIVATION_BOUNDARY"] = self.state[
                 "activation"
@@ -454,6 +461,12 @@ class Stack:
                 "INSERT INTO strategy.adaptive_input_authority(authority_key,backend,authority_generation,activated_at,snapshot_cutoff,candle_cutoff) VALUES('adaptive-input','POSTGRES_PRIMARY',1,%s,0,0) ON CONFLICT DO NOTHING",
                 (self.state["activation"],),
             )
+            # The lifecycle admission worker owns its own one-time handoff row.
+            self.sql(
+                "strategy",
+                "INSERT INTO strategy.adaptive_decision_checkpoints(worker_id,legacy_snapshot_seq,handoff_available_at) VALUES('lifecycle_admission',0,%s)",
+                (self.state["activation"],),
+            )
             for hours in [8, 24]:
                 self.sql(
                     "strategy",
@@ -532,6 +545,7 @@ class Stack:
                 "Market readiness",
             )
             for name, module in [
+                ("admission", "lifecycle_admission_worker"),
                 ("rolling", "rolling_decision_worker"),
                 ("references", "execution_reference_worker"),
                 ("tracking", "tracking_intent_dispatch"),
@@ -609,7 +623,10 @@ class Stack:
                 "social",
                 [self.social / "target/debug/social-evidence-service", "run", "1"],
             )
-            self.transaction_up()
+            if getattr(self.args, "without_transaction", False):
+                print("Transaction not started (--without-transaction)", flush=True)
+            else:
+                self.transaction_up()
             print("Simulation ready: " + str(self.root), flush=True)
         except BaseException:
             self.down()
@@ -761,6 +778,10 @@ class Stack:
             )
         self.state["suite_started"] = stamp()
         self.save()
+        if self.args.suite == "stream_first":
+            from stream_first_scenarios import run_stream_first
+
+            return run_stream_first(self, self.args.stream_first)
         from scenarios import run_suite
 
         run_suite(self, self.args.suite, self.args.extended, self.args.max_hold_soak)
@@ -792,11 +813,22 @@ def main():
     p.add_argument("--transaction-mock-port", type=int, default=18081)
     p.add_argument("--no-build", action="store_true")
     p.add_argument(
+        "--without-transaction",
+        action="store_true",
+        help="do not start Transaction (suites that never reach execution, e.g. stream_first)",
+    )
+    p.add_argument(
         "--suite",
-        choices=["core", "collectors", "production", "transaction", "all"],
+        choices=["core", "collectors", "production", "transaction", "all", "stream_first"],
         default="core",
     )
     p.add_argument("--extended", action="store_true")
+    p.add_argument(
+        "--stream-first",
+        choices=["off", "rest", "empty"],
+        default="off",
+        help="Market completed minutes from the mock Birdeye WebSocket; quiet minutes via REST or EMPTY",
+    )
     p.add_argument(
         "--max-hold-soak",
         action="store_true",

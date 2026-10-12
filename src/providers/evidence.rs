@@ -26,6 +26,8 @@ pub struct EvidenceConfig {
     pub tokens: HashMap<String, Value>,
     pub responses: HashMap<String, Value>,
     pub faults: HashMap<String, Vec<Fault>>,
+    /// Birdeye WebSocket (`/socket/solana`) behaviour; bars come from `tokens`.
+    pub ws: crate::providers::birdeye_ws::BirdeyeWsConfig,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -74,6 +76,8 @@ pub fn router() -> Router<Shared> {
         .route("/defi/v3/token/meme/list", get(birdeye))
         .route("/defi/token_creation_info", get(birdeye))
         .route("/__mock/requests", get(requests))
+        .route("/socket/solana", get(crate::providers::birdeye_ws::upgrade))
+        .route("/__mock/birdeye-ws", get(crate::providers::birdeye_ws::evidence))
         .route("/__mock/telegram/messages", post(publish))
         .route("/__mock/telegram/channels", get(channels))
         .route("/__mock/telegram/{op}", post(telegram))
