@@ -188,6 +188,8 @@ class Stack:
                 self.urls["mock"].replace("http://", "ws://") + "/socket/solana"
             )
             self.env["MARKET_EVIDENCE_STREAM_FIRST_QUIET_POLICY"] = args.stream_first.upper()
+            if args.stream_first == "batch":
+                self.env["MARKET_EVIDENCE_STREAM_FIRST_BATCH_MINUTES"] = str(args.batch_minutes)
         if "activation" in self.state:
             self.env["MARKET_EVIDENCE_PROVIDER_ACTIVATION_BOUNDARY"] = self.state[
                 "activation"
@@ -825,10 +827,12 @@ def main():
     p.add_argument("--extended", action="store_true")
     p.add_argument(
         "--stream-first",
-        choices=["off", "rest", "empty"],
+        choices=["off", "rest", "empty", "batch"],
         default="off",
         help="Market completed minutes from the mock Birdeye WebSocket; quiet minutes via REST or EMPTY",
     )
+    p.add_argument("--batch-minutes", type=int, default=3,
+                   help="BATCH quiet-confirmation window (Market accepts 1-60)")
     p.add_argument(
         "--max-hold-soak",
         action="store_true",

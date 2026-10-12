@@ -35,8 +35,8 @@ class StreamFirstSuite(Suite):
         self.config["birdeye"].setdefault("ws", {}).update(changes)
         self.scenario()
 
-    def phase(self, name, minutes):
-        start = minute(time.time()) + 60
+    def phase(self, name, minutes, start=None):
+        start = start or minute(time.time()) + 60
         self.phases.append({"phase": name, "from": start, "to": start + minutes * 60})
         wait(lambda: time.time() >= start + minutes * 60 + 40, minutes * 60 + 140, name, 1.0)
 
@@ -85,11 +85,27 @@ class StreamFirstSuite(Suite):
         self.phase("disconnect", 3)
         skip_at = minute(time.time()) + 60
         self.ws(skip=[{"mint": MINT, "unix_time": skip_at}], malformed_at=[time.time() + 20])
-        self.skipped = (MINT, skip_at)
+        self.skipped = [(MINT, skip_at)]
         self.phase("stream_misses_bar_and_malformed", 2)
+        # Connection stays open but no frames arrive, heartbeat included: a
+        # feed-wide silent stall that looks like every token going quiet.
+        stall_at = minute(time.time()) + 60
+        self.ws(skip=[], malformed_at=[], silent=[[stall_at, stall_at + 120]])
+        self.phase("silent_feed_stall", 2, stall_at)
+        self.ws(silent=[])
         self.ws(frame_delay_ms=20_000)
         self.phase("stream_lags_past_grace", 3)
         self.ws(frame_delay_ms=0)
+        if self.policy == "batch":
+            wait(
+                lambda: self.scalar(
+                    "market",
+                    "SELECT count(*) FROM market_state.quiet_confirmation_minutes WHERE state IN ('PENDING','CLAIMED')",
+                ) == 0,
+                (self.stack.args.batch_minutes + 4) * 60,
+                "quiet confirmation queue drained",
+                2.0,
+            )
         return self.evaluate()
 
     def evaluate(self):
@@ -98,14 +114,27 @@ class StreamFirstSuite(Suite):
         rows = self.stack.sql(
             "market",
             """SELECT DISTINCT ON (mint, candle_start) mint, extract(epoch FROM candle_start)::bigint,
-                      open, high, low, close, volume
+                      extract(epoch FROM response_received_at)::float8, open, high, low, close, volume
                FROM market_evidence.candle_versions
                WHERE mint = ANY(%s) AND interval_seconds = 60 AND provider = 'birdeye-v1'
                ORDER BY mint, candle_start, response_received_at, observed_seq""",
             (mints,),
         )
-        recorded = {(m, int(t)): tuple(map(float, v)) for m, t, *v in rows}
+        first = {(m, int(t)): tuple(map(float, v)) for m, t, _, *v in rows}
+        received = {(m, int(t)): float(r) for m, t, r, *_ in rows}
+        # What an as-of query sees now: later versions (corrections) win.
+        latest_rows = self.stack.sql(
+            "market",
+            """SELECT DISTINCT ON (mint, candle_start) mint, extract(epoch FROM candle_start)::bigint,
+                      open, high, low, close, volume
+               FROM market_evidence.candle_versions
+               WHERE mint = ANY(%s) AND interval_seconds = 60 AND provider = 'birdeye-v1'
+               ORDER BY mint, candle_start, response_received_at DESC, observed_seq DESC""",
+            (mints,),
+        )
+        recorded = {(m, int(t)): tuple(map(float, v)) for m, t, *v in latest_rows}
         rest = {}
+        batch_requests = []
         for r in http(self.mock + "/__mock/requests"):
             q = r.get("query") or {}
             if not str(r.get("provider_request", "")).startswith("/defi/v3/ohlcv"):
@@ -114,6 +143,8 @@ class StreamFirstSuite(Suite):
                 start, end = int(q["time_from"]), int(q["time_to"])
             except (KeyError, ValueError):
                 continue
+            if end - start > 59:
+                batch_requests.append([q.get("address", "")[:6], start, end - start + 1])
             if end - start == 59:
                 rest.setdefault((q.get("address"), start), 0)
                 rest[(q.get("address"), start)] += 1
@@ -121,7 +152,7 @@ class StreamFirstSuite(Suite):
         problems = []
         for phase in self.phases:
             out = {"phase": phase["phase"], "minutes": 0, "stream": 0, "rest": 0,
-                   "exact": 0, "mismatch": [], "missing": [], "quiet_ok": 0}
+                   "exact": 0, "mismatch": [], "missing": [], "quiet_ok": 0, "late": [], "corrected": []}
             for mint in mints:
                 bars = {b["unix_time"]: b for b in fixtures[mint]["candles"]}
                 for t in range(phase["from"], phase["to"], 60):
@@ -137,7 +168,12 @@ class StreamFirstSuite(Suite):
                     if got is None:
                         out["missing"].append([mint[:6], t])
                         continue
+                    delay = received[(mint, t)] - (t + 60)
+                    if delay > 30:
+                        out["late"].append([mint[:6], t, round(delay)])
                     exp = (want["o"], want["h"], want["l"], want["c"], want["v"])
+                    if first[(mint, t)] != got:
+                        out["corrected"].append([mint[:6], t, round(first[(mint, t)][0], 6), round(got[0], 6)])
                     if all(abs(a - b) <= 1e-9 * max(1.0, abs(b)) for a, b in zip(got, exp)):
                         out["exact"] += 1
                     else:
@@ -154,8 +190,29 @@ class StreamFirstSuite(Suite):
                     problems.append(phase["phase"])
             elif out["mismatch"] or out["missing"]:
                 problems.append(phase["phase"])
+            elif phase["phase"] == "silent_feed_stall" and self.policy == "batch" and out["late"]:
+                # The heartbeat must catch the stall in real time, not the batch later.
+                problems.append(phase["phase"])
         ws = http(self.mock + "/__mock/birdeye-ws")
-        detail = {"policy": self.policy, "phases": summary, "ws": ws,
+        queue = {}
+        if self.policy == "batch":
+            queue["minutes"] = self.stack.sql(
+                "market",
+                "SELECT state, count(*) FROM market_state.quiet_confirmation_minutes GROUP BY state ORDER BY 1",
+            )
+            queue["attempts"] = self.stack.sql(
+                "market",
+                "SELECT state, coalesce(error_class,''), count(*) FROM market_state.quiet_confirmation_attempts GROUP BY 1,2 ORDER BY 1,2",
+            )
+            queue["recovered"] = self.stack.sql(
+                "market",
+                """SELECT left(mint,6), extract(epoch FROM candle_start)::bigint,
+                          round(extract(epoch FROM confirmed_at - candle_start - interval '1 minute'))
+                   FROM market_state.quiet_confirmation_minutes WHERE state='RECOVERED' ORDER BY 2,1""",
+            )
+            print(json.dumps({"queue": queue, "batch_requests": len(batch_requests)}, default=str), flush=True)
+        detail = {"policy": self.policy, "phases": summary, "ws": ws, "queue": queue,
+                  "batch_requests": batch_requests,
                   "skipped": list(self.skipped), "quiet": sorted(self.quiet),
                   "rest_completed_minute_requests": sum(rest.values())}
         out_dir = self.stack.root / "reports"
