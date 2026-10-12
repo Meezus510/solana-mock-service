@@ -9,3 +9,4 @@ pub mod websocket;
 
 pub mod snapshot;
 pub mod evidence;
+pub mod birdeye_ws;

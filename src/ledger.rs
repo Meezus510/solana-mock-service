@@ -130,6 +130,7 @@ pub struct Order {
 
 pub struct Ledger {
     pub evidence: crate::providers::evidence::EvidenceState,
+    pub birdeye_ws: crate::providers::birdeye_ws::WsEvidence,
     started: Instant,
     pub scenario: Scenario,
     balances: Balances,
@@ -157,6 +158,7 @@ impl Ledger {
     pub fn new(scenario: Scenario) -> Self {
         Self {
             evidence: Default::default(),
+            birdeye_ws: Default::default(),
             started: Instant::now(),
             scenario,
             balances: Balances::default(),
