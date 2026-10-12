@@ -7,6 +7,10 @@
 //! `tick_offsets_ms` into its minute: first trade at `h`, then `l`, then `c`,
 //! with `v` cumulative. Like the real feed, the frame's `o` is the minute's
 //! first trade, not the previous close that REST opens at.
+//!
+//! `heartbeat_mints` (wrapped SOL by default) trade continuously: a subscribed
+//! one gets a frame every `heartbeat_interval_ms` without any fixture. During a
+//! `silent` window the socket stays open but every frame is dropped.
 use crate::Shared;
 use axum::{
     Json,
@@ -40,6 +44,11 @@ pub struct BirdeyeWsConfig {
     pub max_addresses: usize,
     /// Bars the stream never sends although REST has them: `{"mint","unix_time"}`.
     pub skip: Vec<SkipBar>,
+    /// Always-trading tokens that tick without a fixture.
+    pub heartbeat_mints: Vec<String>,
+    pub heartbeat_interval_ms: u64,
+    /// `[from, to)` unix seconds during which no frame is delivered.
+    pub silent: Vec<[f64; 2]>,
 }
 
 impl Default for BirdeyeWsConfig {
@@ -52,8 +61,19 @@ impl Default for BirdeyeWsConfig {
             malformed_at: Vec::new(),
             max_addresses: 100,
             skip: Vec::new(),
+            heartbeat_mints: vec!["So11111111111111111111111111111111111111112".into()],
+            heartbeat_interval_ms: 1_000,
+            silent: Vec::new(),
         }
     }
+}
+
+/// A heartbeat token's running 1m bar at `now_ms`.
+pub fn heartbeat_frame(mint: &str, now_ms: i64, count: u64) -> Value {
+    let start = now_ms.div_euclid(60_000) * 60;
+    json!({"type":"PRICE_DATA","data":{"o":150.0,"h":150.0,"l":150.0,"c":150.0,
+        "v":count as f64,"vUsd":150.0 * count as f64,"type":"1m","eventType":"ohlcv",
+        "unixTime":start,"symbol":"SOL","address":mint,"isScaled":false,"multiplier":null}})
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -162,6 +182,8 @@ async fn serve(state: Shared, mut socket: WebSocket) {
     let mut subscribed_at: HashMap<String, i64> = HashMap::new();
     let mut fired_disconnects: BTreeSet<i64> = BTreeSet::new();
     let mut fired_malformed: BTreeSet<i64> = BTreeSet::new();
+    let mut heartbeat_due_ms = 0i64;
+    let mut heartbeat_count = 0u64;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     'outer: loop {
         tokio::select! {
@@ -217,7 +239,15 @@ async fn serve(state: Shared, mut socket: WebSocket) {
                         }
                     }
                 }
+                let silent = cfg.silent.iter().any(|w| (w[0] * 1000.0) as i64 <= now && now < (w[1] * 1000.0) as i64);
                 let mut due = Vec::new();
+                if now >= heartbeat_due_ms {
+                    heartbeat_due_ms = now + cfg.heartbeat_interval_ms.max(50) as i64;
+                    for mint in subscribed.iter().filter(|m| cfg.heartbeat_mints.contains(m)) {
+                        heartbeat_count += 1;
+                        due.push((now, heartbeat_frame(mint, now, heartbeat_count)));
+                    }
+                }
                 for mint in &subscribed {
                     let Some(bars) = tokens.get(mint).and_then(|t| t.get("candles")).and_then(Value::as_array) else { continue };
                     let since = subscribed_at.get(mint).copied().unwrap_or(now);
@@ -236,6 +266,10 @@ async fn serve(state: Shared, mut socket: WebSocket) {
                             }
                         }
                     }
+                }
+                if silent {
+                    // Dropped, not delayed: the feed never resends them.
+                    due.clear();
                 }
                 due.sort_by_key(|(at, _)| *at);
                 for (_, frame) in due {
@@ -260,6 +294,14 @@ async fn serve(state: Shared, mut socket: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heartbeat_frame_is_a_running_bar_of_the_current_minute() {
+        let frame = heartbeat_frame("SOL", 600_500, 3);
+        assert_eq!(frame["data"]["unixTime"].as_i64(), Some(600));
+        assert_eq!(frame["data"]["address"].as_str(), Some("SOL"));
+        assert_eq!(frame["data"]["v"].as_f64(), Some(3.0));
+    }
 
     #[test]
     fn complex_and_simple_subscriptions_name_their_mints() {
